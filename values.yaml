@@ -1,0 +1,222 @@
+alloy:
+  alloy:
+    extraPorts:
+    - name: "otelgrpc"
+      port: 4317
+      targetPort: 4317
+      protocol: "TCP"
+    - name: "otelhttp"
+      port: 4318
+      targetPort: 4318
+      protocol: "TCP"
+    clustering:
+      enabled: true
+    configMap:
+      create: false
+      name: alloy-config
+    stabilityLevel: "public-preview"
+    securityContext:
+      privileged: true
+      runAsGroup: 0
+      runAsUser: 0
+  controller:
+    hostPID: true
+  fullnameOverride: alloy
+
+grafana:
+  persistence:
+    enabled: false
+  fullnameOverride: grafana
+
+  datasources:
+    datasources.yaml:
+      apiVersion: 1
+      datasources:
+      - name: Mimir
+        type: prometheus
+        url: http://mimir-nginx:80/prometheus
+        editable: true
+      - name: Tempo
+        type: tempo
+        url: http://tempo-query-frontend:3100
+        editable: true
+        jsonData:
+          serviceMap:
+            datasourceUid: 'Mimir'
+          tracesToLogsV2:
+            datasourceUid: "Loki"
+          tracesToMetrics:
+            datasourceUid: "Mimir"
+          tracesToProfiles:
+            datasourceUid: "Pyroscope"
+      - name: Loki
+        type: loki
+        url: http://loki-query-frontend:3100
+        editable: true
+        jsonData:
+          derivedFields:
+          - datasourceName: Tempo
+            datasourceUid: Tempo
+            matcherRegex: traceID=(\w+)
+            name: traceID
+            url: '$${__value.raw}'
+      - name: Pyroscope
+        type: grafana-pyroscope-datasource
+        url: http://pyroscope-headless:4040
+        editable: true
+
+loki:
+  chunksCache:
+    enabled: false
+  deploymentMode: SimpleScalable
+  fullnameOverride: loki
+  minio:
+    enabled: false
+
+  ingester:
+    replicas: 1
+  querier:
+    replicas: 1
+    maxUnavailable: 1
+  queryFrontend:
+    replicas: 1
+    maxUnavailable: 1
+  queryScheduler:
+    replicas: 1
+  distributor:
+    replicas: 1
+    maxUnavailable: 1
+  compactor:
+    replicas: 1
+  indexGateway:
+    replicas: 1
+    maxUnavailable: 1
+
+  backend:
+    replicas: 0
+  read:
+    replicas: 0
+  write:
+    replicas: 0
+
+  singleBinary:
+    replicas: 0
+
+
+  loki:
+    auth_enabled: false
+    schemaConfig:
+      configs:
+        - from: 2024-04-01
+          object_store: s3
+          store: tsdb
+          schema: v13
+          index:
+            prefix: index_
+            period: 24h
+    limits_config:
+      max_label_names_per_series: 30
+    storage:
+      type: s3
+      bucketNames:
+        chunks: chunks
+        ruler: ruler
+        admin: admin
+      s3:
+        endpoint: 
+        bucketnames: chunks
+        secretAccessKey: 
+        accessKeyId: 
+        s3forcepathstyle: true
+        insecure: false
+
+mimir-distributed:
+  fullnameOverride: mimir
+  enterprise:
+    enabled: false
+  metaMonitoring:
+    grafanaAgent:
+      installOperator: false
+  minio:
+    enabled: false
+  store_gateway:
+    persistentVolume:
+      enabled: false
+  ingester:
+    persistentVolume:
+      enabled: false
+  alertmanager:
+    persistentVolume:
+      enabled: false
+  compactor:
+    persistentVolume:
+      enabled: false
+  mimir:
+    structuredConfig:
+      limits:
+        max_label_names_per_series: 30
+        max_global_series_per_user: 1500000
+        ingestion_rate: 1000000
+      alertmanager_storage:
+        s3:
+          bucket_name: mimir-ruler
+          access_key_id: 
+          endpoint: 
+          insecure: true
+          secret_access_key: 
+      blocks_storage:
+        backend: s3
+        s3:
+          bucket_name: mimir-blocks	
+          access_key_id: 
+          endpoint: 
+          insecure: true
+          secret_access_key: 
+      ruler_storage:
+        s3:
+          bucket_name: mimir-ruler
+          access_key_id: 
+          endpoint: 
+          insecure: true
+          secret_access_key: 
+
+
+tempo-distributed:
+  storage:
+    trace:
+      backend: s3
+      s3:
+        access_key: 
+        secret_key: 
+        bucket: tempo-traces
+        endpoint: 
+        insecure: true
+  global_overrides:
+    defaults:
+      metrics_generator:
+        processors:
+          - service-graphs
+          - span-metrics
+  fullnameOverride: tempo
+  metaMonitoring:
+    grafanaAgent:
+      installOperator: false
+  traces:
+    otlp:
+      http:
+        enabled: true
+  metricsGenerator:
+    kind: StatefulSet
+    enabled: true
+    config:
+      storage:
+        remote_write: 
+          - url: http://mimir-nginx:80/api/v1/push
+            send_exemplars: true
+
+pyroscope:
+  pyroscope:
+    fullnameOverride: pyroscope
+  agent:
+    enabled: false
+

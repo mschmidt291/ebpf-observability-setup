@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboards
+data:
+  apm-dashboard.json:
+{{ .Files.Get "dashboards/apm-dashboard.json" | toJson | indent 4 }}
+  mlt-dashboard.json:
+{{.Files.Get "dashboards/mlt.json" | toJson | indent 4 }}
+  spanmetrics-demo.json:
+{{.Files.Get "dashboards/spanmetrics-demo.json" | toJson | indent 4 }}

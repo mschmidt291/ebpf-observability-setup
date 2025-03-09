@@ -1,0 +1,216 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "alloy.fullname" (index .Subcharts "alloy") }}-config
+data:
+  config.alloy: |
+    tracing {
+        sampling_fraction = 0.1
+
+        write_to = [otelcol.processor.batch.beyla.input]
+    }
+
+    // Traces
+    otelcol.receiver.otlp "default" {
+    grpc {
+        endpoint = "0.0.0.0:4317"
+    }
+
+    http {
+        endpoint = "0.0.0.0:4318"
+    }
+
+    output {
+        traces  = [otelcol.processor.batch.beyla.input]
+        }
+    }
+
+    discovery.kubernetes "k8s_pods" {
+        role = "pod"
+        namespaces {
+            own_namespace = false
+        }
+        selectors {
+            field = "spec.nodeName=" + env("HOSTNAME")
+            role = "pod"
+        }
+    }
+
+    beyla.ebpf "beyla" {
+        open_port = "80-8080"
+        attributes {
+            kubernetes {
+                enable = "true"
+                }
+        }
+        routes {
+            unmatched = "heuristic"
+        }
+        output {
+            traces = [otelcol.processor.batch.beyla.input]
+        }
+    }
+
+    otelcol.processor.batch "beyla" {
+        output {
+            traces  = [otelcol.exporter.otlphttp.beyla.input,otelcol.connector.spanmetrics.default.input,otelcol.connector.servicegraph.default.input]
+        }
+    }
+
+    otelcol.connector.spanmetrics "default" {
+        histogram {
+            explicit {}
+        }
+        exemplars {
+            enabled = true
+            max_per_data_point = 2
+        }
+        dimension {
+            name = "http.response.status_code"
+        }
+
+        dimension {
+            name = "http.request.method"
+            default = "GET"
+        }
+
+        dimension {
+            name = "http.route"
+        }
+
+        dimension {
+            name = "special.attr"
+        }
+
+        output {
+            metrics = [otelcol.processor.transform.default.input]
+        }
+    }
+
+    otelcol.processor.transform "default" {
+        error_mode = "ignore"
+
+        metric_statements {
+            context = "datapoint"
+            statements = [
+            // "insert" means that a metric datapoint attribute will be inserted
+            // only if an attribute with the same key does not already exist.
+            `merge_maps(attributes, resource.attributes, "insert")`,
+            ]
+        }
+
+        output {
+            metrics = [otelcol.exporter.prometheus.default.input]
+        }
+    }
+
+
+    otelcol.exporter.otlphttp "beyla" {
+    client {
+        endpoint = "http://{{ include "tempo.fullname" (index .Subcharts "tempo-distributed") }}-distributor:4318"
+        tls {
+        insecure = true
+            }
+        }
+    }
+
+    otelcol.connector.servicegraph "default" {
+        dimensions = ["http.method"]
+        output {
+            metrics = [otelcol.exporter.prometheus.default.input]
+        }
+    }
+
+
+    discovery.relabel "local_pods" {
+        targets = discovery.kubernetes.k8s_pods.targets
+        rule {
+            action = "drop"
+            regex = "Succeeded|Failed"
+            source_labels = ["__meta_kubernetes_pod_phase"]
+        }
+        rule {
+            action = "replace"
+            regex = "(.*)@(.*)"
+            replacement = "${2}-${1}"
+            separator = "@"
+            source_labels = ["__meta_kubernetes_pod_label_app_kubernetes_io_instance", "__meta_kubernetes_pod_label_app_kubernetes_io_name"]
+            target_label = "service_name"
+        }
+        rule {
+            action = "labelmap"
+            regex = "__meta_kubernetes_pod_label_(.+)"
+        }
+        rule {
+            action = "replace"
+            source_labels = ["__meta_kubernetes_namespace"]
+            target_label = "namespace"
+        }
+        rule {
+            action = "replace"
+            source_labels = ["__meta_kubernetes_pod_name"]
+            target_label = "pod"
+        }
+        rule {
+            action = "replace"
+            source_labels = ["__meta_kubernetes_node_name"]
+            target_label = "node"
+        }
+        rule {
+            action = "replace"
+            source_labels = ["__meta_kubernetes_pod_container_name"]
+            target_label = "container"
+            }
+        }
+
+    pyroscope.ebpf "local_pods" {
+        forward_to = [ pyroscope.write.endpoint.receiver ]
+        targets = discovery.relabel.local_pods.output
+    }
+
+    pyroscope.write "endpoint" {
+        endpoint {
+            url = "http://{{ include "pyroscope.fullname" (index .Subcharts "pyroscope") }}:4040"
+        }
+    }
+
+    prometheus.scrape "demo" {
+    targets    = discovery.relabel.local_pods.output
+    forward_to = [prometheus.remote_write.default.receiver]
+    clustering {
+        enabled = true
+    }
+    scrape_interval = "120s"
+    }
+
+    loki.source.kubernetes "pods" {
+        targets    = discovery.relabel.local_pods.output
+        forward_to = [loki.write.local.receiver]
+    }
+
+    loki.write "local" {
+    endpoint {
+        url = "http://{{ include "loki.fullname" (index .Subcharts "loki")}}-distributor:3100/loki/api/v1/push"
+        }
+    }
+
+    
+    otelcol.exporter.otlphttp "default" {
+    client {
+        endpoint = "http://{{ include "tempo.fullname" (index .Subcharts "tempo-distributed") }}-distributor:4318"
+        tls {
+        insecure = true
+            }
+        }
+    }
+
+    otelcol.exporter.prometheus "default" {
+        forward_to = [prometheus.remote_write.default.receiver]
+        resource_to_telemetry_conversion = true
+    }
+
+    prometheus.remote_write "default" {
+        endpoint {
+            url = "http://{{ include "mimir.fullname" (index .Subcharts "mimir-distributed") }}-nginx:80/api/v1/push"
+        }
+    }
